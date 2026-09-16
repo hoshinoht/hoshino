@@ -1,6 +1,10 @@
 MIT License
 
-Copyright (c) 2026 ht
+Copyright (c) 2026 the repository owner
+
+This MIT License applies only to the hoshino software. It expressly excludes
+`assets/logo.png`, which is not licensed under MIT; see `assets/NOTICE.md` for
+the separate authorization and asset-rights notice.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -1,0 +1,59 @@
+# Copy this file to the hoshino config path only when you want persistent
+# settings. A missing default config is valid, and hoshino never creates one.
+# See README.md for path resolution and precedence.
+
+# Available themes: "dusk-darker" (the built-in default) or "dusk".
+theme = "dusk-darker"
+
+# "auto" follows NO_COLOR on text TTYs; "always" and "never" are explicit.
+color = "auto"
+
+# Optional existing report. Relative paths are resolved from the Git worktree
+# root. Uncomment to select a report before the built-in candidate list.
+# coverage_report_path = "coverage/lcov.info"
+
+[image]
+# The bundled logo is active by default. Uncomment path to override it with a
+# user-supplied image. Relative image paths are resolved from the current
+# working directory.
+# path = "/path/to/your/image.png"
+
+# auto, kitty, iterm2, sixel, halfblocks, or none.
+protocol = "auto"
+
+# Conservative display geometry defaults, in terminal cells.
+width_cells = 24
+max_height_rows = 12
+fit = "contain" # "contain" preserves the whole image; "cover" crops it.
+position = "left" # "left" or "top" insets the image inside the single card frame.
+
+# Optional non-query cell-pixel geometry. Set both together to force known
+# geometry for Kitty, iTerm2, or Sixel. Valid range for each value is 1..=1000.
+# cell_width_px = 8
+# cell_height_px = 16
+
+[limits]
+# Direct toolchain probes: timeout and captured stdout/stderr.
+subprocess_timeout_ms = 500 # allowed: 1..=10000
+subprocess_output_bytes = 65536 # allowed: 1..=1048576
+
+# Repository LOC scan: files, individual file bytes, aggregate read bytes,
+# and elapsed time. Ignore rules and symlink boundaries still apply.
+scan_max_files = 10000 # allowed: 1..=100000
+scan_max_file_bytes = 1048576 # allowed: 1..=16777216
+scan_max_read_bytes = 8388608 # allowed: 1..=134217728
+scan_elapsed_ms = 250 # allowed: 1..=10000
+
+# Existing coverage reports are read only and bounded by this byte limit.
+coverage_max_bytes = 8388608 # allowed: 1..=67108864
+
+# Image file, dimensions, retained decoded pixels, and animation frames.
+image_max_file_bytes = 16777216 # allowed: 1..=67108864
+image_max_dimension_px = 4096 # allowed: 1..=16384
+image_max_decoded_bytes = 67108864 # allowed: 1..=536870912
+image_max_frames = 120 # allowed: 1..=1000
+
+# Live refresh cadence and animation delay clamp.
+live_refresh_ms = 1000 # allowed: 100..=60000
+frame_min_delay_ms = 20 # allowed: 1..=1000
+frame_max_delay_ms = 10000 # allowed: 1..=60000
