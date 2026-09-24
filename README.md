@@ -89,25 +89,31 @@ In a Git worktree, the concise card includes:
 - primary project language and its detected runtime version;
 - total lines of code and aggregate line coverage;
 - Git head, clean/dirty state, staged, unstaged, conflict, and ahead facts;
-- CPU, memory, disks, uptime, clock, date, timezone, and day progress.
+- CPU, memory, disks, uptime, clock, date, and day progress.
 
-Normal output presents those available facts as one compact 6–9-row identity
-rail inside a single frame. Its total width is capped at 104 columns, including
-the frame, optional inset image, divider, and text.
+Normal output presents those available facts as one compact 6–9-row instrument
+rail inside a single frame: workspace and Git with the runtime right-aligned,
+OS and CPU with uptime, memory and disk meters, and a 24-hour day ruler with
+hour labels beneath it. Its total width is capped at 104 columns, including the
+frame, optional inset image, divider, and text; meters and the ruler shrink with
+the available width, and right-aligned support is dropped first when space runs
+out.
 
 Outside a Git worktree, project and Git sections are omitted entirely. The
 card is still a system-and-time readout. A user-invoked non-Git `hoshino`
 therefore remains useful, while the shell hook is silent there.
 
 `--full` switches to a compact workspace/Git/runtime header followed by
-nonempty `[ system & health ]`, `[ active context ]`, and
-`[ project telemetry ]` bands inside the same frame. At wide widths each band
-uses explicit semantic columns; narrow terminals stack the same labeled facts.
-Full includes health bars, time and Git context, per-language LOC, coverage
-format/path/freshness/mtime and available branch/function values, upstream
-context, per-disk detail, and diagnostic subjects/codes without repeating
-unavailable fields. It is capped at 120 total columns and can take longer than
-the concise path.
+nonempty `system & health`, `active context`, and `project telemetry` bands
+inside the same frame. System & health is a metric table (memory and one row
+per disk, with volumes that print identical usage shown once and `▲ full` at
+95% or more); active context carries the timezone, the 24-hour day ruler, and
+Git counts; project telemetry shows a stacked language bar with one legend row
+per language, coverage meters, and coverage format/path/source/mtime and
+freshness. At wide widths the table keeps explicit columns; narrow terminals
+drop its header and stack each row's labeled facts. Diagnostics carry their
+codes, and unavailable fields are omitted rather than repeated. It is capped at
+120 total columns and can take longer than the concise path.
 
 `--json` emits one versioned JSON document (`schema_version: 1`) for one-shot
 automation. Units are explicit in the model, missing metrics are `null` or

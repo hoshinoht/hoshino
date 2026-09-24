@@ -27,7 +27,7 @@ use crate::{
     },
     render::{
         kitty_one_shot::{self, SerializedImage},
-        text::{CardBody, CardLine, CardSpan, section_rail, section_rows},
+        text::{CardBody, CardLine, CardSpan, layout_line, section_rail, section_rows},
         theme::{Palette, Role, SpanStyle, expand_span},
     },
 };
@@ -457,7 +457,8 @@ pub fn compose_one_shot_card(
         {
             let image_width = usize::from(cells.width);
             let image_slot = image_width + 2;
-            let text_width = inner - image_slot - 1;
+            // `│ image │ text │`: the divider and frame each keep one cell of padding.
+            let text_width = inner - image_slot - 3;
             let identity_height = if full {
                 body.identity_layout_height
             } else {
@@ -475,7 +476,7 @@ pub fn compose_one_shot_card(
                     " ".repeat(image_width)
                 };
                 rows.push(format!(
-                    "{} {} {}{}{}",
+                    "{} {} {} {} {}",
                     styled("│", Role::Border, SpanStyle::Solid, color, palette),
                     left,
                     styled("│", Role::Border, SpanStyle::Solid, color, palette),
@@ -518,10 +519,10 @@ pub fn compose_one_shot_card(
     }
     if full {
         for section in &body.sections {
-            let heading = section_rail(section.name, section.role, inner);
+            let heading = section_rail(section.name, inner);
             rows.push(framed_section_rail(&heading, inner, color, palette));
             rows.extend(
-                section_rows(section, inner, width >= 80)
+                section_rows(section, inner - 2, width >= 80)
                     .iter()
                     .map(|line| framed_line(line, inner, color, palette)),
             );
@@ -569,11 +570,12 @@ fn title_row(body: &CardBody, inner: usize, color: bool, palette: Palette) -> St
     )
 }
 
+/// `│ content │` with one cell of padding on each side of the content.
 fn framed_line(line: &CardLine, inner: usize, color: bool, palette: Palette) -> String {
     format!(
-        "{}{}{}",
+        "{} {} {}",
         styled("│", Role::Border, SpanStyle::Solid, color, palette),
-        serialize_line(line, inner, color, palette),
+        serialize_line(line, inner - 2, color, palette),
         styled("│", Role::Border, SpanStyle::Solid, color, palette),
     )
 }
@@ -587,7 +589,7 @@ fn framed_section_rail(line: &CardLine, inner: usize, color: bool, palette: Pale
 }
 
 fn serialize_line(line: &CardLine, width: usize, color: bool, palette: Palette) -> String {
-    serialize_spans(&line.fragments, width, color, palette, true)
+    serialize_spans(&layout_line(line, width), width, color, palette, true)
 }
 
 fn serialize_spans(
@@ -1172,14 +1174,15 @@ mod tests {
             transfer: vec![],
             placeholder_rows: vec!["I0\n".into(), "I1\n".into(), "I2\n".into()],
         };
-        let line = |text: &str| CardLine {
-            text: text.into(),
-            role: Role::Text,
-            fragments: vec![CardSpan {
-                text: text.into(),
-                role: Role::Text,
-                style: SpanStyle::Solid,
-            }],
+        let line = |text: &str| {
+            CardLine::new(
+                Role::Text,
+                vec![CardSpan {
+                    text: text.into(),
+                    role: Role::Text,
+                    style: SpanStyle::Solid,
+                }],
+            )
         };
         let body = CardBody {
             title: vec![CardSpan {
@@ -1230,9 +1233,9 @@ mod tests {
                             assert!(!output.contains("I0"));
                         }
                         if full {
-                            assert!(output.contains("[ details ]"));
+                            assert!(strip_ansi(&output).contains("├─ details ─"));
                         } else {
-                            assert!(!output.contains("[ details ]"));
+                            assert!(!output.contains("details"));
                         }
                     }
                 }
@@ -1256,38 +1259,33 @@ mod tests {
         assert_eq!(lines[2].chars().nth(4), Some(' '));
         assert_eq!(lines[1].chars().nth(2), Some(' '));
         assert_eq!(lines[6].chars().nth(2), Some(' '));
-        assert!(lines[7].starts_with("├─[ details ]"));
+        assert!(lines[7].starts_with("├─ details ─"));
         assert!(lines[7].ends_with('┤'));
         assert!(!lines[7].starts_with("│  │"));
-        assert!(
-            lines[lines.len() - 2]
-                .strip_prefix('│')
-                .and_then(|line| line.strip_suffix('│'))
-                .is_some_and(|line| line.chars().all(|character| character == ' '))
-        );
+        // Bands end on their last fact; there is no trailing spacer row.
+        assert!(lines[lines.len() - 2].starts_with("│ section row"));
         for color in [false, true] {
             let output = compose_one_shot_card(&body, true, 120, color, Theme::DuskDarker, None);
             let rail = output
                 .lines()
                 .map(strip_ansi)
-                .find(|line| line.contains("[ details ]"))
+                .find(|line| line.contains("─ details ─"))
                 .unwrap();
-            assert!(rail.starts_with("├─[ details ]") && rail.ends_with('┤'));
+            assert!(rail.starts_with("├─ details ─") && rail.ends_with('┤'));
             assert_eq!(cell_width(&rail), 120);
         }
     }
 
     #[test]
     fn prepared_kitty_placeholders_are_bounded_to_inset_slots() {
-        let line = CardLine {
-            text: "identity".into(),
-            role: Role::Text,
-            fragments: vec![CardSpan {
+        let line = CardLine::new(
+            Role::Text,
+            vec![CardSpan {
                 text: "identity".into(),
                 role: Role::Text,
                 style: SpanStyle::Solid,
             }],
-        };
+        );
         let body = CardBody {
             title: vec![CardSpan {
                 text: "hoshino".into(),

@@ -16,7 +16,7 @@ use ratatui::{
     layout::{Rect, Size},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
 };
 use ratatui_image::{
     FontSize, Resize, StatefulImage,
@@ -40,8 +40,8 @@ use crate::{
             prevalidate_live,
         },
         text::{
-            CardBody, CardLine, CardSpan, card_body, expanded_card_spans, section_rail,
-            section_rows,
+            CardBody, CardLine, CardSpan, card_body, expanded_card_spans, layout_line,
+            section_rail, section_rows,
         },
         theme::{Role, palette},
     },
@@ -206,7 +206,8 @@ fn live_plan(
 ) -> LivePlan {
     let cap = if full { 120 } else { 104 };
     let card = Rect::new(area.x, area.y, area.width.min(cap), area.height);
-    let inner_width = card.width.saturating_sub(2);
+    // Borders plus one cell of horizontal padding on each side (see `draw_live_plan`).
+    let inner_width = card.width.saturating_sub(4);
     let inner_height = card.height.saturating_sub(2);
     let left_image_layout = has_image
         && settings.image.position == crate::config::ImagePosition::Left
@@ -221,11 +222,7 @@ fn live_plan(
         std::iter::repeat_with(blank_line).take(identity_rows.saturating_sub(semantic.len())),
     );
     for section in &body.sections {
-        semantic.push(section_rail(
-            section.name,
-            section.role,
-            usize::from(inner_width),
-        ));
+        semantic.push(section_rail(section.name, usize::from(inner_width)));
         semantic.extend(section_rows(
             section,
             usize::from(inner_width),
@@ -265,7 +262,7 @@ fn live_plan(
             && required.saturating_add(image_height) <= inner_height
         {
             image = Some(Rect::new(
-                card.x + 1 + (inner_width - image_width) / 2,
+                card.x + 2 + (inner_width - image_width) / 2,
                 card.y + 1,
                 image_width,
                 image_height,
@@ -325,9 +322,10 @@ fn inset_left_lines(
             if index >= identity_rows {
                 return line;
             }
+            // `image │ text`, matching the one-shot compositor's padded divider.
             let mut fragments = vec![
                 CardSpan {
-                    text: " ".repeat(usize::from(image_width + 2)),
+                    text: " ".repeat(usize::from(image_width + 1)),
                     role: Role::Text,
                     style: crate::render::theme::SpanStyle::Solid,
                 },
@@ -336,70 +334,20 @@ fn inset_left_lines(
                     role: Role::Border,
                     style: crate::render::theme::SpanStyle::Solid,
                 },
+                CardSpan {
+                    text: " ".into(),
+                    role: Role::Text,
+                    style: crate::render::theme::SpanStyle::Solid,
+                },
             ];
-            fragments.extend(fit_fragments(&line.fragments, text_width));
+            fragments.extend(layout_line(&line, text_width));
             semantic_line(line.role, fragments)
         })
         .collect()
 }
 
 fn semantic_line(role: Role, fragments: Vec<CardSpan>) -> CardLine {
-    let text = fragments.iter().map(|span| span.text.as_str()).collect();
-    CardLine {
-        text,
-        role,
-        fragments,
-    }
-}
-
-fn fit_fragments(fragments: &[CardSpan], width: usize) -> Vec<CardSpan> {
-    let mut used = 0;
-    let mut output = Vec::new();
-    for fragment in fragments {
-        if used >= width {
-            break;
-        }
-        let text = fit_cells(&fragment.text, width - used);
-        used += ratatui::text::Line::from(text.as_str()).width();
-        output.push(CardSpan {
-            text,
-            ..fragment.clone()
-        });
-    }
-    output
-}
-
-fn fit_cells(value: &str, width: usize) -> String {
-    if ratatui::text::Line::from(value).width() <= width {
-        return value.into();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    if width == 1 {
-        return "…".into();
-    }
-    let left = take_cells(value.chars(), (width - 1) / 2);
-    let right = take_cells(
-        value.chars().rev(),
-        width - 1 - ratatui::text::Line::from(left.as_str()).width(),
-    )
-    .chars()
-    .rev()
-    .collect::<String>();
-    format!("{left}…{right}")
-}
-
-fn take_cells(characters: impl Iterator<Item = char>, width: usize) -> String {
-    let mut output = String::new();
-    for character in characters {
-        let candidate = format!("{output}{character}");
-        if ratatui::text::Line::from(candidate.as_str()).width() > width {
-            break;
-        }
-        output.push(character);
-    }
-    output
+    CardLine::new(role, fragments)
 }
 
 /// Testable terminal ownership and loop core. Cleanup is deliberately outside
@@ -646,16 +594,14 @@ fn draw_live_plan(
     colors: crate::render::theme::Palette,
     mut render_image: impl FnMut(&mut ratatui::Frame<'_>, Rect) -> bool,
 ) -> bool {
+    let block = block.padding(Padding::horizontal(1));
     let inner = block.inner(plan.card);
     frame.render_widget(block, plan.card);
     let lines = plan
         .lines
         .iter()
         .map(|line| {
-            let fitted = semantic_line(
-                line.role,
-                fit_fragments(&line.fragments, usize::from(inner.width)),
-            );
+            let fitted = semantic_line(line.role, layout_line(line, usize::from(inner.width)));
             Line::from(
                 expanded_card_spans(&fitted, colors)
                     .into_iter()
@@ -1038,8 +984,9 @@ mod tests {
         settings.image.width_cells = 12;
         settings.image.max_height_rows = 6;
         let left = live_plan(Rect::new(0, 0, 43, 12), &settings, body(false), false, true);
-        assert_eq!(left.image, Some(Rect::new(2, 2, 6, 4)));
-        assert_eq!(left.lines[0].fragments[0].text, "        ");
+        // 43 cells leave 39 inside the padded frame, so the image yields to the text rail.
+        assert_eq!(left.image, Some(Rect::new(2, 2, 4, 4)));
+        assert_eq!(left.lines[0].fragments[0].text, "     ");
         assert_eq!(left.lines[0].fragments[1].text, "│");
         let mut too_short_for_padding = body(false);
         too_short_for_padding.identity.truncate(2);
@@ -1118,11 +1065,8 @@ mod tests {
         let plan = live_plan(Rect::new(0, 0, 104, 30), &settings, body(true), true, true);
         assert_eq!(plan.lines[0].fragments[1].text, "│");
         let section = &plan.lines[6];
-        assert!(section.text.contains("[ system & health ]"));
-        assert_eq!(
-            section.role,
-            Role::System(crate::render::theme::SystemRole::Health)
-        );
+        assert!(section.text.contains("─ system & health ─"));
+        assert_eq!(section.role, Role::Border);
         assert_ne!(
             section.fragments.first().map(|span| span.text.as_str()),
             Some("│")
@@ -1135,8 +1079,8 @@ mod tests {
         settings.image.position = crate::config::ImagePosition::Top;
         settings.image.width_cells = 8;
         settings.image.max_height_rows = 3;
-        // Three section bodies each include heading, detail, and trailing spacer.
-        let required = u16::try_from(body(true).identity.len() + 9).unwrap();
+        // Three section bodies each include a heading and one detail row.
+        let required = u16::try_from(body(true).identity.len() + 6).unwrap();
         let dropped = live_plan(
             Rect::new(0, 0, 80, required + 2),
             &settings,
@@ -1207,11 +1151,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            order.find("[ system & health ]").unwrap() < order.find("[ active context ]").unwrap()
+            order.find("─ system & health ─").unwrap() < order.find("─ active context ─").unwrap()
         );
         assert!(
-            order.find("[ active context ]").unwrap()
-                < order.find("[ project telemetry ]").unwrap()
+            order.find("─ active context ─").unwrap()
+                < order.find("─ project telemetry ─").unwrap()
         );
     }
 
