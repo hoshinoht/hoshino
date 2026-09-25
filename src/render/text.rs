@@ -6,6 +6,7 @@ use crate::{
     },
 };
 
+use super::badge::Badge;
 use super::theme::{
     ExpandedChunk, Palette, Role, SpanStyle, SystemRole, expand_span, palette, runtime_role,
 };
@@ -54,6 +55,9 @@ pub struct CardLine {
     pub trailing: Vec<CardSpan>,
     /// One width-dependent element inserted before `fragments[at]`.
     pub flex: Option<FlexSlot>,
+    /// A rare state that may earn a Tier 3 shape badge. Only the Full
+    /// one-shot Kitty compositor draws it; text surfaces ignore it.
+    pub badge: Option<Badge>,
 }
 impl CardLine {
     pub fn new(role: Role, fragments: Vec<CardSpan>) -> Self {
@@ -143,6 +147,7 @@ fn row(role: Role, fragments: Vec<CardSpan>) -> CardLine {
         fragments,
         trailing: Vec::new(),
         flex: None,
+        badge: None,
     };
     line.text = plain(&line);
     line
@@ -172,6 +177,10 @@ fn with_flex(mut line: CardLine, at: usize, kind: Flex, (min, max): (usize, usiz
         max,
         compact: None,
     });
+    line
+}
+fn with_badge(mut line: CardLine, badge: Option<Badge>) -> CardLine {
+    line.badge = badge;
     line
 }
 fn with_compact(mut line: CardLine, compact: Vec<CardSpan>) -> CardLine {
@@ -276,7 +285,7 @@ fn table_row(
         },
         FULL_METER,
     );
-    with_compact(line, compact)
+    with_badge(with_compact(line, compact), full.then_some(Badge::DiskFull))
 }
 fn table_header(name: &str, detail: &str) -> CardLine {
     let line = with_flex(
@@ -553,9 +562,12 @@ fn full_identity(snapshot: &Snapshot) -> Vec<CardLine> {
         });
     }
     if let Some(place) = place {
-        identity.push(row(
-            Role::Primary,
-            vec![gutter("dir", FULL_GUTTER), span(place, Role::Primary)],
+        identity.push(with_badge(
+            row(
+                Role::Primary,
+                vec![gutter("dir", FULL_GUTTER), span(place, Role::Primary)],
+            ),
+            snapshot.system.os.is_some().then_some(Badge::Identity),
         ));
     }
     identity

@@ -11,6 +11,7 @@ use crate::{
     config::{self, ImagePathOrigin, ImageSource, Settings},
     model::{Diagnostic, DiagnosticSeverity, Snapshot, SnapshotMode},
     render::{
+        badge::Badge,
         image::{self, RenderMode},
         json::render_json,
         terminal,
@@ -279,19 +280,62 @@ fn run_one_shot(cli: Cli, cwd: &Path, settings: Settings) -> Result<(), AppError
         }
         Err(error) => return Err(error.into()),
     };
-    let rows = terminal::compose_one_shot_card(
+    // Tier 3 badges ride the same reviewed Kitty path and only exist once the
+    // logo transfer is ready. A badge that cannot be prepared is simply absent;
+    // its row keeps the textual state (for example `▲ full`).
+    let badges = if cli.full {
+        one_shot_badges(&body, &settings, cell_pixels, decision.is_tmux)
+    } else {
+        Vec::new()
+    };
+    let (rows, placed) = terminal::compose_one_shot_card_with_badges(
         &body,
         cli.full,
         width,
         settings.color_enabled,
         settings.theme,
         Some((&serialized, cells, settings.image.position)),
+        &badges,
     );
     let mut stdout = io::stdout().lock();
     stdout.write_all(&serialized.transfer)?;
+    for badge in badges.iter().filter(|badge| placed.contains(&badge.badge)) {
+        stdout.write_all(&badge.image.transfer)?;
+    }
     stdout.write_all(rows.as_bytes())?;
     stdout.flush()?;
     Ok(())
+}
+
+/// Prepares the badges whose states the card actually carries. Everything is
+/// rasterised and serialized in memory before stdout is touched.
+fn one_shot_badges(
+    body: &crate::render::text::CardBody,
+    settings: &Settings,
+    cell_pixels: image::CellPixels,
+    tmux: bool,
+) -> Vec<terminal::PreparedBadge> {
+    let present = |kind: Badge| {
+        body.identity
+            .iter()
+            .chain(body.sections.iter().flat_map(|section| &section.left))
+            .chain(body.sections.iter().flat_map(|section| &section.right))
+            .any(|line| line.badge == Some(kind))
+    };
+    Badge::ALL
+        .into_iter()
+        .filter(|kind| present(*kind))
+        .filter_map(|kind| {
+            terminal::prepare_badge(
+                kind,
+                settings.theme,
+                Some(cell_pixels),
+                &settings.limits,
+                tmux,
+            )
+            .ok()
+        })
+        .collect()
 }
 
 fn hook_context_suppressed(cwd: &Path) -> bool {

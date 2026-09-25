@@ -26,6 +26,7 @@ use crate::{
         RenderMode, ResizePlan, SelectedProtocol, TerminalCapabilities, TerminalKind, resize_plan,
     },
     render::{
+        badge::{self, BADGE_COLUMNS, BADGE_ROWS, Badge},
         kitty_one_shot::{self, SerializedImage},
         text::{CardBody, CardLine, CardSpan, layout_line, section_rail, section_rows},
         theme::{Palette, Role, SpanStyle, expand_span},
@@ -434,6 +435,53 @@ impl Write for CappedWriter {
     }
 }
 
+/// A rasterised Tier 3 badge, fully serialized before stdout is touched.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedBadge {
+    pub badge: Badge,
+    pub image: SerializedImage,
+}
+
+/// One cell of gap plus the 5-column badge, reserved on the region's right edge.
+const BADGE_SLOT: usize = BADGE_COLUMNS as usize + 1;
+/// A region keeps at least this much text beside a badge, or the badge is dropped.
+const MIN_BADGE_TEXT: usize = 40;
+
+/// Rasterises and serializes one badge through the same bounded, query-free
+/// Kitty direct transfer as the logo: 5×2 Unicode-placeholder cells, PNG
+/// capped by the configured limits, no cursor movement or deletion.
+pub fn prepare_badge(
+    badge: Badge,
+    theme: Theme,
+    cell_pixels: Option<CellPixels>,
+    limits: &Limits,
+    tmux: bool,
+) -> Result<PreparedBadge, OneShotError> {
+    let (width, height) =
+        badge::raster_size(cell_pixels.map(|pixels| (pixels.width, pixels.height)));
+    ensure_image_bytes(PixelRect { width, height }, limits)?;
+    let raster = badge::rasterize(
+        badge.shape(),
+        width,
+        height,
+        badge.color(Palette::for_theme(theme)),
+    )
+    .ok_or(OneShotError::Image(ImageError::Limit("badge raster")))?;
+    let png = encode_png(&raster, limits)?;
+    let image = kitty_one_shot::serialize(
+        &png,
+        kitty_one_shot::next_image_id(),
+        BADGE_COLUMNS,
+        BADGE_ROWS,
+        tmux,
+    )
+    .map_err(|_| OneShotError::Image(ImageError::Limit("badge transport")))?;
+    if !placeholder_rows_match(&image, Size::new(BADGE_COLUMNS, BADGE_ROWS)) {
+        return Err(OneShotError::Image(ImageError::Limit("badge placeholders")));
+    }
+    Ok(PreparedBadge { badge, image })
+}
+
 /// Composes the single append-safe one-shot frame. Placeholder rows are already
 /// serialized by the fixed Kitty transport; this only places them inside it.
 pub fn compose_one_shot_card(
@@ -444,11 +492,47 @@ pub fn compose_one_shot_card(
     theme: Theme,
     image: Option<(&SerializedImage, Size, ImagePosition)>,
 ) -> String {
+    compose_one_shot_card_with_badges(body, full, width, color, theme, image, &[]).0
+}
+
+/// [`compose_one_shot_card`] plus Full-mode Tier 3 badges. Returns the frame
+/// and the badges actually placed; only their transfers may be written, so an
+/// unplaced badge has no graphics side effect.
+pub fn compose_one_shot_card_with_badges(
+    body: &CardBody,
+    full: bool,
+    width: u16,
+    color: bool,
+    theme: Theme,
+    image: Option<(&SerializedImage, Size, ImagePosition)>,
+    badges: &[PreparedBadge],
+) -> (String, Vec<Badge>) {
     let width = usize::from(width);
     debug_assert!(width >= 20);
     let inner = width - 2;
     let palette = Palette::for_theme(theme);
+    let badges = if full { badges } else { &[] };
+    let mut used = Vec::new();
+    let border = || styled("│", Role::Border, SpanStyle::Solid, color, palette);
+    let identity_lines = |height: usize| -> Vec<Option<CardLine>> {
+        (0..height)
+            .map(|index| body.identity.get(index).cloned())
+            .collect()
+    };
     let mut rows = vec![title_row(body, inner, color, palette)];
+    let framed_identity = |used: &mut Vec<Badge>| -> Vec<String> {
+        region_rows(
+            |_| identity_lines(body.identity.len()),
+            inner - 2,
+            color,
+            palette,
+            badges,
+            used,
+        )
+        .into_iter()
+        .map(|text| format!("{} {text} {}", border(), border()))
+        .collect()
+    };
     match image {
         Some((image, cells, ImagePosition::Left))
             if width >= usize::from(MIN_LEFT_IMAGE_COLUMNS)
@@ -466,7 +550,15 @@ pub fn compose_one_shot_card(
             };
             let placeholder_height = image.placeholder_rows.len().min(identity_height);
             let top_padding = (identity_height - placeholder_height) / 2;
-            for index in 0..identity_height {
+            let texts = region_rows(
+                |_| identity_lines(identity_height),
+                text_width,
+                color,
+                palette,
+                badges,
+                &mut used,
+            );
+            for (index, text) in texts.into_iter().enumerate() {
                 let left = if (top_padding..top_padding + placeholder_height).contains(&index) {
                     image.placeholder_rows[index - top_padding]
                         .strip_suffix('\n')
@@ -477,14 +569,11 @@ pub fn compose_one_shot_card(
                 };
                 rows.push(format!(
                     "{} {} {} {} {}",
-                    styled("│", Role::Border, SpanStyle::Solid, color, palette),
+                    border(),
                     left,
-                    styled("│", Role::Border, SpanStyle::Solid, color, palette),
-                    body.identity.get(index).map_or_else(
-                        || " ".repeat(text_width),
-                        |line| serialize_line(line, text_width, color, palette)
-                    ),
-                    styled("│", Role::Border, SpanStyle::Solid, color, palette),
+                    border(),
+                    text,
+                    border(),
                 ));
             }
         }
@@ -498,33 +587,38 @@ pub fn compose_one_shot_card(
             for placeholder in &image.placeholder_rows {
                 rows.push(format!(
                     "{}{}{}{}{}",
-                    styled("│", Role::Border, SpanStyle::Solid, color, palette),
+                    border(),
                     " ".repeat(left_padding),
                     placeholder.strip_suffix('\n').unwrap_or(placeholder),
                     " ".repeat(inner - image_width - left_padding),
-                    styled("│", Role::Border, SpanStyle::Solid, color, palette),
+                    border(),
                 ));
             }
-            rows.extend(
-                body.identity
-                    .iter()
-                    .map(|line| framed_line(line, inner, color, palette)),
-            );
+            rows.extend(framed_identity(&mut used));
         }
-        _ => rows.extend(
-            body.identity
-                .iter()
-                .map(|line| framed_line(line, inner, color, palette)),
-        ),
+        _ => rows.extend(framed_identity(&mut used)),
     }
     if full {
         for section in &body.sections {
             let heading = section_rail(section.name, inner);
             rows.push(framed_section_rail(&heading, inner, color, palette));
+            let wide = width >= 80;
             rows.extend(
-                section_rows(section, inner - 2, width >= 80)
-                    .iter()
-                    .map(|line| framed_line(line, inner, color, palette)),
+                region_rows(
+                    |content| {
+                        section_rows(section, content, wide)
+                            .into_iter()
+                            .map(Some)
+                            .collect()
+                    },
+                    inner - 2,
+                    color,
+                    palette,
+                    badges,
+                    &mut used,
+                )
+                .into_iter()
+                .map(|text| format!("{} {text} {}", border(), border())),
             );
         }
     }
@@ -540,7 +634,70 @@ pub fn compose_one_shot_card(
         ),
         styled("╯", Role::Border, SpanStyle::Solid, color, palette),
     ));
-    format!("{}\n", rows.join("\n"))
+    (format!("{}\n", rows.join("\n")), used)
+}
+
+/// Lays one region (identity column or band) out at `width` cells. `lay`
+/// returns the region's rows for a content width (`None` is a blank row).
+/// When a row carries a still-unused prepared badge and the text keeps
+/// [`MIN_BADGE_TEXT`] cells, every row reserves the right-hand badge slot (so
+/// table columns stay aligned) and the badge spans that row and the one above
+/// it, or the one below when it is first. Otherwise the region is unchanged.
+fn region_rows(
+    lay: impl Fn(usize) -> Vec<Option<CardLine>>,
+    width: usize,
+    color: bool,
+    palette: Palette,
+    badges: &[PreparedBadge],
+    used: &mut Vec<Badge>,
+) -> Vec<String> {
+    let text = |line: &Option<CardLine>, width: usize| {
+        line.as_ref().map_or_else(
+            || " ".repeat(width),
+            |line| serialize_line(line, width, color, palette),
+        )
+    };
+    if !badges.is_empty() && width >= BADGE_SLOT + MIN_BADGE_TEXT {
+        let narrow = width - BADGE_SLOT;
+        let lines = lay(narrow);
+        let found = lines.iter().enumerate().find_map(|(index, line)| {
+            let kind = line.as_ref()?.badge?;
+            let prepared = badges
+                .iter()
+                .find(|prepared| prepared.badge == kind && !used.contains(&kind))?;
+            Some((index, prepared))
+        });
+        let placed = found.and_then(|(index, prepared)| {
+            let top = if index > 0 {
+                index - 1
+            } else if index + 1 < lines.len() {
+                index
+            } else {
+                return None;
+            };
+            Some((top, prepared))
+        });
+        if let Some((top, prepared)) = placed {
+            used.push(prepared.badge);
+            return lines
+                .iter()
+                .enumerate()
+                .map(|(row, line)| {
+                    let slot = if (top..top + usize::from(BADGE_ROWS)).contains(&row) {
+                        let placeholder = &prepared.image.placeholder_rows[row - top];
+                        placeholder
+                            .strip_suffix('\n')
+                            .unwrap_or(placeholder)
+                            .to_owned()
+                    } else {
+                        " ".repeat(usize::from(BADGE_COLUMNS))
+                    };
+                    format!("{} {slot}", text(line, narrow))
+                })
+                .collect();
+        }
+    }
+    lay(width).iter().map(|line| text(line, width)).collect()
 }
 
 fn placeholder_rows_match(image: &SerializedImage, cells: Size) -> bool {
@@ -570,15 +727,6 @@ fn title_row(body: &CardBody, inner: usize, color: bool, palette: Palette) -> St
     )
 }
 
-/// `│ content │` with one cell of padding on each side of the content.
-fn framed_line(line: &CardLine, inner: usize, color: bool, palette: Palette) -> String {
-    format!(
-        "{} {} {}",
-        styled("│", Role::Border, SpanStyle::Solid, color, palette),
-        serialize_line(line, inner - 2, color, palette),
-        styled("│", Role::Border, SpanStyle::Solid, color, palette),
-    )
-}
 fn framed_section_rail(line: &CardLine, inner: usize, color: bool, palette: Palette) -> String {
     format!(
         "{}{}{}",
@@ -1274,6 +1422,204 @@ mod tests {
             assert!(rail.starts_with("├─ details ─") && rail.ends_with('┤'));
             assert_eq!(cell_width(&rail), 120);
         }
+    }
+
+    fn assert_query_free_and_append_safe(bytes: &[u8]) {
+        for forbidden in [
+            b"\x1b[5n".as_slice(),
+            b"\x1b[6n".as_slice(),
+            b"\x1b[14t".as_slice(),
+            b"\x1b[16t".as_slice(),
+            b"\x1b[s".as_slice(),
+            b"\x1b[u".as_slice(),
+            b"\x1b7".as_slice(),
+            b"\x1b8".as_slice(),
+            b"?1049".as_slice(),
+            b"a=d".as_slice(),
+            b"a=q".as_slice(),
+        ] {
+            assert!(
+                !bytes
+                    .windows(forbidden.len())
+                    .any(|window| window == forbidden)
+            );
+        }
+        let mut offset = 0;
+        while let Some(relative) = bytes[offset..].windows(2).position(|w| w == b"\x1b[") {
+            let start = offset + relative;
+            let final_byte = bytes[start + 2..]
+                .iter()
+                .find(|byte| (0x40..=0x7e).contains(*byte))
+                .copied()
+                .expect("terminated CSI");
+            assert_eq!(final_byte, b'm', "only SGR CSI sequences are allowed");
+            offset = start + 2;
+        }
+    }
+
+    fn badge_body() -> CardBody {
+        let line = |text: &str, badge: Option<Badge>| {
+            let mut line = CardLine::new(
+                Role::Text,
+                vec![CardSpan {
+                    text: text.into(),
+                    role: Role::Text,
+                    style: SpanStyle::Solid,
+                }],
+            );
+            line.badge = badge;
+            line
+        };
+        CardBody {
+            title: vec![CardSpan {
+                text: "hoshino".into(),
+                role: Role::Primary,
+                style: SpanStyle::Solid,
+            }],
+            identity: vec![
+                line("git   master", None),
+                line("dir   ~/x · macOS 27.0", Some(Badge::Identity)),
+            ],
+            identity_layout_height: 6,
+            sections: vec![crate::render::text::CardSection {
+                name: "system & health",
+                role: Role::Secondary,
+                left: vec![
+                    line("mem   50%", None),
+                    line("disk  /    96.0%  ▲ full", Some(Badge::DiskFull)),
+                    line("      /x   97.0%  ▲ full", Some(Badge::DiskFull)),
+                ],
+                right: vec![],
+            }],
+        }
+    }
+
+    fn prepared_badges(tmux: bool) -> Vec<PreparedBadge> {
+        Badge::ALL
+            .into_iter()
+            .map(|badge| {
+                prepare_badge(
+                    badge,
+                    Theme::DuskDarker,
+                    Some(CellPixels::new(8, 20).unwrap()),
+                    &Limits::default(),
+                    tmux,
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn badges_are_bounded_query_free_kitty_placements() {
+        for tmux in [false, true] {
+            for prepared in prepared_badges(tmux) {
+                assert!(placeholder_rows_match(
+                    &prepared.image,
+                    Size::new(BADGE_COLUMNS, BADGE_ROWS)
+                ));
+                assert!(prepared.image.transfer.len() < 16 * 1024);
+                assert_query_free_and_append_safe(&prepared.image.transfer);
+                for row in &prepared.image.placeholder_rows {
+                    assert_query_free_and_append_safe(row.as_bytes());
+                }
+                let control = String::from_utf8_lossy(&prepared.image.transfer);
+                assert!(control.contains("a=T,t=d,f=100,U=1,"));
+                assert!(control.contains(",c=5,r=2,q=2,"));
+            }
+        }
+    }
+
+    #[test]
+    fn full_places_one_identity_and_one_disk_badge_inside_the_frame() {
+        let logo = SerializedImage {
+            transfer: vec![],
+            placeholder_rows: vec!["I0\n".into(), "I1\n".into(), "I2\n".into()],
+        };
+        let badges = prepared_badges(false);
+        let body = badge_body();
+        for position in [ImagePosition::Left, ImagePosition::Top] {
+            for color in [false, true] {
+                let (output, placed) = compose_one_shot_card_with_badges(
+                    &body,
+                    true,
+                    120,
+                    color,
+                    Theme::DuskDarker,
+                    Some((&logo, Size::new(2, 3), position)),
+                    &badges,
+                );
+                assert_eq!(placed, vec![Badge::Identity, Badge::DiskFull]);
+                // Two rows per badge; the second full disk earns no second burst.
+                assert_eq!(output.matches('\u{10eeee}').count(), 2 * 2 * 5);
+                assert!(
+                    output
+                        .lines()
+                        .all(|row| cell_width(&strip_ansi(row)) == 120)
+                );
+                assert_query_free_and_append_safe(output.as_bytes());
+                // The textual state survives beside the shape.
+                assert_eq!(strip_ansi(&output).matches("▲ full").count(), 2);
+                let rows: Vec<_> = output.lines().collect();
+                let disk = rows.iter().position(|row| row.contains("disk  /")).unwrap();
+                // The burst spans the full disk row and the row above it.
+                assert!(rows[disk].contains('\u{10eeee}'));
+                assert!(rows[disk - 1].contains('\u{10eeee}'));
+                assert!(!rows[disk + 1].contains('\u{10eeee}'));
+                let dir = rows.iter().position(|row| row.contains("dir   ")).unwrap();
+                assert!(rows[dir].contains('\u{10eeee}'));
+                assert!(rows[dir - 1].contains('\u{10eeee}'));
+            }
+        }
+    }
+
+    #[test]
+    fn badges_never_appear_in_normal_narrow_or_badge_free_output() {
+        let badges = prepared_badges(false);
+        let body = badge_body();
+        let logo = SerializedImage {
+            transfer: vec![],
+            placeholder_rows: vec!["I0\n".into()],
+        };
+        let image = Some((&logo, Size::new(2, 1), ImagePosition::Top));
+        let (normal, placed) = compose_one_shot_card_with_badges(
+            &body,
+            false,
+            104,
+            true,
+            Theme::DuskDarker,
+            image,
+            &badges,
+        );
+        assert!(placed.is_empty());
+        assert!(!normal.contains('\u{10eeee}'));
+        let (narrow, placed) = compose_one_shot_card_with_badges(
+            &body,
+            true,
+            44,
+            true,
+            Theme::DuskDarker,
+            image,
+            &badges,
+        );
+        assert!(placed.is_empty());
+        assert!(!narrow.contains('\u{10eeee}'));
+        assert!(narrow.lines().all(|row| cell_width(&strip_ansi(row)) == 44));
+        let (plain, placed) = compose_one_shot_card_with_badges(
+            &body,
+            true,
+            120,
+            true,
+            Theme::DuskDarker,
+            image,
+            &[],
+        );
+        assert!(placed.is_empty());
+        assert_eq!(
+            plain,
+            compose_one_shot_card(&body, true, 120, true, Theme::DuskDarker, image)
+        );
+        assert!(strip_ansi(&plain).contains("▲ full"));
     }
 
     #[test]

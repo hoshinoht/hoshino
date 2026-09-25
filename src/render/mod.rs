@@ -1,5 +1,6 @@
 //! Side-effect-free text and machine-readable presentation.
 
+pub mod badge;
 pub mod image;
 pub mod json;
 pub(crate) mod kitty_one_shot;

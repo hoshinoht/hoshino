@@ -348,6 +348,12 @@ read it. The bundled logo has separate rights terms in
   `set -g allow-passthrough on`. One-shot writes no stdin/query,
   cursor-movement, raw-mode, or alternate-screen controls. The virtual image
   remains with scrollback, with only a transient hint and no immediate delete.
+- Full one-shot output adds at most two Tier 3 shape badges (5×2 cells) on
+  that same Kitty path, only after the logo transfer is prepared: a pink
+  Cookie9Sided beside the OS identity and a yellow SoftBurst beside the first
+  disk at 95% or more. Each is a bounded in-memory raster sent as its own
+  direct transfer with placeholder rows; the `▲ full` text always remains, and
+  every text-only path (including `--no-image`) draws no badge.
 - Explicit one-shot iTerm2, Sixel, and Halfblocks requests warn and fall back
   to the full text card. They do not render one-shot graphics.
 - One-shot widths below 20 use bounded unframed text with no graphics. Framing

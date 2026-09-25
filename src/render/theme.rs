@@ -112,8 +112,8 @@ impl Palette {
                 blue: Rgb::new(0x7B, 0xC1, 0xF2),
                 lavender: Rgb::new(0xB0, 0xBC, 0xE8),
                 text: Rgb::new(0xFF, 0xFF, 0xFF),
-                overlay: Rgb::new(0x85, 0x8B, 0x9C),
-                surface: Rgb::new(0x20, 0x24, 0x2E),
+                overlay: Rgb::new(0x89, 0x8B, 0x95),
+                surface: Rgb::new(0x21, 0x24, 0x2C),
             },
         }
     }
@@ -327,7 +327,7 @@ mod tests {
         let colors = palette(Theme::DuskDarker);
         assert_eq!(
             blend(colors.surface, colors.blue, 35, 100),
-            Rgb::new(63, 90, 114)
+            Rgb::new(64, 90, 113)
         );
     }
 
