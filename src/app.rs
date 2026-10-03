@@ -119,13 +119,18 @@ fn hook_context_settings(cli: &Cli) -> Result<Settings, AppError> {
 }
 
 fn collect_snapshot(cwd: &Path, full: bool, mode: SnapshotMode, settings: &Settings) -> Snapshot {
-    let project = collect::collect(
-        cwd,
-        full,
-        &settings.limits,
-        settings.coverage_report_path.as_deref(),
-    );
-    let system = collect::system::collect();
+    // System probes and project reads are independent. Join before rendering so
+    // one-shot output retains a single owner and diagnostics stay ordered.
+    let (project, system) = std::thread::scope(|scope| {
+        let system = scope.spawn(collect::system::collect);
+        let project = collect::collect(
+            cwd,
+            full,
+            &settings.limits,
+            settings.coverage_report_path.as_deref(),
+        );
+        (project, system.join().expect("system collector panicked"))
+    });
     let time = collect::time::collect();
     Snapshot {
         schema_version: crate::model::SCHEMA_VERSION,
@@ -595,6 +600,31 @@ mod tests {
         assert_eq!(snapshot.mode, SnapshotMode::Hook);
         assert!(snapshot.git.is_some());
         assert!(snapshot.project.is_some());
+    }
+
+    #[test]
+    fn joined_snapshot_keeps_git_counts_and_partial_loc_diagnostic() {
+        let path = std::env::temp_dir().join(format!("hoshino-joined-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        drop(git2::Repository::init(&path).unwrap());
+        std::fs::write(path.join("a.txt"), "a\n").unwrap();
+        std::fs::write(path.join("b.txt"), "b\nc\n").unwrap();
+        let mut settings = Settings::default();
+        settings.limits.scan_max_read_bytes = 2;
+        settings.limits.scan_elapsed_ms = 10_000;
+
+        let snapshot = collect_snapshot(&path, true, SnapshotMode::OneShot, &settings);
+        std::fs::remove_dir_all(&path).unwrap();
+
+        assert_eq!(snapshot.git.unwrap().unstaged, 2);
+        let loc = snapshot.project.unwrap().loc.unwrap();
+        assert_eq!(loc.total, 1);
+        assert!(loc.truncated);
+        assert!(snapshot.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "scan-truncated"
+                && diagnostic.message == "LOC scan truncated by read-bytes budget(s)"
+        }));
+        assert!(snapshot.time != crate::model::LocalTime::default());
     }
 
     #[test]

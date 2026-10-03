@@ -412,6 +412,19 @@ must not be read as a complete total. Normal mode collects the primary
 language; `--full` includes all detected finite languages and `Other` text
 files.
 
+System collection overlaps project collection, and Git status overlaps the LOC
+scan. Both workers are joined before rendering; output remains synchronous,
+diagnostics keep their established order, and every scan retains its existing
+limits and regular-file checks. No results are cached between invocations.
+
+To investigate collector cost for a particular repository, run this project-local
+profiling example (it times each collector separately, so the times do not add up
+to the parallel application's wall time):
+
+```bash
+cargo run --release --example profile_collect -- /path/to/repository
+```
+
 ### Coverage
 
 Coverage is detected from existing files only; hoshino never runs a coverage

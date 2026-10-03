@@ -29,8 +29,22 @@ pub fn collect(
     coverage_path: Option<&Path>,
 ) -> ProjectFacts {
     let mut diagnostics = Vec::new();
-    let git = git::collect(root_or_cwd, &mut diagnostics);
-    let Some(root) = git.as_ref().and_then(|_| git::workdir(root_or_cwd)) else {
+    let root = git::workdir(root_or_cwd);
+    // LOC and Git status read independent facts. Keep diagnostics private until
+    // joining, preserving the serial collector's Git-before-LOC ordering.
+    let (git, scan) = std::thread::scope(|scope| {
+        let scan = root.as_ref().map(|root| {
+            scope.spawn(move || {
+                let mut diagnostics = Vec::new();
+                let scan = loc::scan(root, full, limits, &mut diagnostics);
+                (scan, diagnostics)
+            })
+        });
+        let git = git::collect(root_or_cwd, &mut diagnostics);
+        let scan = scan.map(|scan| scan.join().expect("LOC collector panicked"));
+        (git, scan)
+    });
+    let Some(root) = root.filter(|_| git.is_some()) else {
         return ProjectFacts {
             context: Context {
                 worktree: None,
@@ -41,7 +55,8 @@ pub fn collect(
             diagnostics,
         };
     };
-    let scan = loc::scan(&root, full, limits, &mut diagnostics);
+    let (scan, scan_diagnostics) = scan.expect("worktree scan was started");
+    diagnostics.extend(scan_diagnostics);
     let detection = project::detect(&root, root_or_cwd, &scan);
     let toolchains = toolchain::collect(&detection, full, limits, &mut diagnostics);
     let coverage = coverage::collect(
